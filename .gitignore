@@ -1,0 +1,39 @@
+# ---- GRID data and anything derived from it: NEVER commit (see AGENTS.md) ----
+derived/
+data/
+*.zst
+*.jsonl
+*.jsonl.*
+*.parquet
+*.duckdb
+*.duckdb.wal
+*.feather
+*.arrow
+*.pkl
+*.joblib
+*.lgb
+models/
+series.csv
+meta/
+stl-hackathon-2026-grid-starter/
+
+# ---- Local config / secrets ----
+.env
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# ---- Notebooks / IDE ----
+.ipynb_checkpoints/
+.idea/
+.vscode/
+.streamlit/secrets.toml

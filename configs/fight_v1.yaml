@@ -1,0 +1,13 @@
+# Fight definition, version 1. See docs/DESIGN.md §3.2.
+# Every derived table and model records this version; never mix versions.
+version: fight_v1
+
+fight:
+  quiet_gap_s: 2.5          # no damage between the pair for this long -> new fight
+  join_window_s: 2.0        # damage/kill within this window and radius joins the fight
+  join_radius_m: 15
+  end_after_s: 3.0          # no damage for this long -> fight over
+  pre_fight_utility_s: 4.0  # utility cast within this window counts as "before the fight"
+
+whatif:
+  min_support: 30           # similar real fights needed before recommending a change

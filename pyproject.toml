@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "valorant-coach"
+version = "0.1.0"
+description = "Match review and decision coaching for pro VALORANT, built on GRID data."
+requires-python = ">=3.14"  # compression.zstd is built in from 3.14
+dependencies = []
+
+[project.optional-dependencies]
+# Installed later, stage by stage.
+data = ["pandas", "pyarrow", "duckdb", "pyyaml"]
+model = ["lightgbm", "scikit-learn", "shap"]
+app = ["streamlit", "plotly"]
+dev = ["pytest"]
+
+[project.scripts]
+coach = "coach.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["coach*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
