@@ -33,6 +33,7 @@ A match-review tool for VALORANT coaches. It flags the most costly decisions in 
   - Game state per event: all players' **2D position**, `money`, `loadoutValue`, `netWorth`; round segment has `alive`, `currentHealth`.
   - **Not in the feed state:** map name and agent → join from `meta/games.csv` and `meta/rosters.csv`. No armor field seen yet.
   - No aim during fights, no shot events, no line of sight. Aim only on ability casts (supplement).
+  - **No crowd-control status.** Nothing records who was flashed, stunned, slowed or nearsighted. The `statusEffects` field on players is always `[]` (checked in 2026 series; absent in 2025) and only appears in round-level snapshots. Ability events (e.g. `blindside`) record the *cast*, not who it hit. CC effects must be **estimated** (§3.3).
   - `!` events undo earlier events; abandoned maps are rolled back; series `2855902` is invalid.
 
 ---
@@ -131,7 +132,52 @@ fight:
 - **Outcome label (per player):** survived and the opponent(s) in the fight died, vs died. Mixed/unclear fights are dropped or labelled separately.
 - Stored with `fight_def_version` so models and tables never silently mix definitions.
 
-### 3.3 Data model (Parquet tables)
+### 3.3 Utility and crowd control in fights
+
+Utility is one of the biggest drivers of who wins a fight (a flash before a peek, a stun on a retake, a smoke that cuts an angle), so the fight model must account for it. The feed only says **who cast what, when, from where and aiming where**; it never says who was affected. Utility therefore enters the model at two levels, and the finer one must prove it helps.
+
+**Level 1: utility context (always on).** Counts of utility cast near the fight shortly before it starts, by class and by side:
+- For each fight participant: `own_util_*`, `team_util_*`, `enemy_util_*` for classes `flash`, `stun` (concuss/stun/daze), `nearsight`, `smoke`, `recon`, `damage` (mollies, nades), `slow`, `other`.
+- Window: `pre_fight_utility_s` (default 4 s) before fight start; area: cast position within `utility_radius_m` (default 25 m) of the fight, or aimed towards it.
+- Plus `secs_since_last_team_flash`, `secs_since_last_enemy_flash`, and whether the player's **own** utility was used in the window.
+- Works for every cast, including ones without a supplement record (using GRID's 2D position).
+
+**Level 2: estimated CC hit (experimental).** Flag opponents who were *probably* affected:
+1. **Effect point:** project the cast along its aim, using a per-ability model from the catalog: `instant_cone` (e.g. KAY/O, Breach flash), `thrown`/`curved` (Phoenix Curveball, Skye bird; approximate), `placed` (trap/area at a target point), `projectile` (Sova bolts). Use the supplement's `interpolated` position/view; only `quality = ok` or a frame within 200 ms (low-rate series: flag and down-weight).
+2. **Affected?** Opponent within the ability's effect radius of that point and the fight starts inside its effect window (e.g. flash ~1.5 s, stun ~3 s).
+3. Output per participant: `possibly_flashed`, `possibly_stunned`, `possibly_nearsighted` (0/1) and `cc_confidence` (based on delivery type, frame quality, distance).
+- Shown in the UI as **"possibly flashed"**, never as fact. No line of sight or geometry: a player behind a wall, or looking away, is wrongly flagged.
+- **Kept only if it improves held-out log loss** over Level 1 alone (ablation on the tournament split). Otherwise it stays as UI context only.
+
+**Ability catalog** (`configs/abilities.yaml`, hand-written from game knowledge, not from the data):
+```yaml
+blindside:            # ability slug as it appears in the feed
+  agent: Yoru
+  class: flash
+  delivery: thrown    # instant_cone | thrown | curved | placed | projectile | self
+  range_m: 20
+  radius_m: 12
+  effect_s: 1.75
+  max_charges: 2      # to know whether the utility was still available
+```
+- Build the slug list from the data (distinct ability names in `player-used-ability`); log unknown slugs at ingest and fail the schema check if a common one is missing.
+- Values are approximate and patch-dependent; record the patch used.
+
+**Ingest rules:** apply `player-!used-ability` undo events (74 in one series alone); join the supplement on `grid_event_id` where `in_grid` is true.
+
+**Decision vs situation:**
+| Feature | Type | Why |
+|---|---|---|
+| Own utility used before the fight | **decision** | The player chose it |
+| Team utility before the fight | **decision** (team) | Coachable team habit; what-if can suggest "fight after the flash" |
+| Enemy utility before the fight / `possibly_flashed` on the player | situation | Not the player's choice |
+| `possibly_flashed` on the opponent | decision (team) | Result of the team's utility |
+
+**What-if with utility:** e.g. "fight with a team flash in the last 1.5 s": set `team_util_flash ≥ 1` and `possibly_flashed(opponent) = 1` if Level 2 is in the model. Only suggest it when the player's team **had that utility available** (agent has the ability and it wasn't already used that round) and the support check passes.
+
+**Selection bias is strongest here:** teams use utility on fights they were going to take anyway, on prepared executes. Mitigations: rich situation features (round phase, numbers advantage, spike state, map zone), compare within similar situations, and present utility gains as estimates with real examples.
+
+### 3.4 Data model (Parquet tables)
 
 **`fights`** (one row per player-in-fight, ~few hundred k rows)
 | Column group | Columns |
@@ -139,9 +185,13 @@ fight:
 | Keys | `fight_id, series_id, game_id, round_num, player_id, opponent_ids, team_id, side, map, agent, tournament, is_low_rate` |
 | Time | `t_start, round_clock_s, spike_planted, t_since_plant_s` |
 | Situation (can't change) | `alive_us, alive_them, hp, opp_hp, loadout, opp_loadout, team_money, weapon_est, map_zone` |
-| Decision (can change) | `nearest_teammate_m, teammates_within_15m, own_util_last_4s, team_util_last_4s, util_type_last, took_fight_while_outnumbered, moved_since_last_contact` |
+| Decision (can change) | `nearest_teammate_m, teammates_within_15m, took_fight_while_outnumbered, moved_since_last_contact` |
+| Utility, level 1 (§3.3) | `own_util_{class}, team_util_{class}, enemy_util_{class}` for flash/stun/nearsight/smoke/recon/damage/slow/other; `secs_since_last_team_flash, secs_since_last_enemy_flash, team_util_available_{class}` |
+| Utility, level 2 (§3.3, experimental) | `possibly_flashed, possibly_stunned, possibly_nearsighted` for the player and for the opponent(s); `cc_confidence` |
 | Leaky / separate | `landed_first_hit` |
 | Labels | `won_fight, won_round` |
+
+**`casts`** (one row per ability cast, after undo): `cast_id (grid_event_id), series_id, game_id, round_num, t, player_id, team_id, agent, ability, class, pos_2d, pos_3d, view, quality, is_low_rate, est_effect_point, est_affected_ids`. Fight utility features are computed from this table.
 
 **`round_states`** (one row per state change after a kill/plant): `alive_atk, alive_def, hp_sum_*, loadout_*, spike_planted, time_left_s, map, won_round_atk`.
 
@@ -151,7 +201,7 @@ fight:
 
 Map zones: grid cells (e.g. 8×8 per map) at first; replace with named callouts later if time allows.
 
-### 3.4 Models
+### 3.5 Models
 | Model | Target | Algorithm | Notes |
 |---|---|---|---|
 | Baseline | `won_fight` | Logistic regression | Sanity floor |
@@ -160,11 +210,11 @@ Map zones: grid cells (e.g. 8×8 per map) at first; replace with named callouts 
 
 - **Split:** by **tournament** (or series), never by row. Hold out one recent event as the final test set.
 - **Metrics:** log loss, Brier score, AUC, reliability plot. Report vs baseline.
-- **What-if:** change only decision columns to plausible values (e.g. `nearest_teammate_m → 8`, `own_util_last_4s → 1`). Gain = Δ calibrated P(win) × round swing. Only suggest changes seen often enough in that situation (support check, `n ≥ 30` similar fights) to avoid extrapolating.
+- **What-if:** change only decision columns to plausible values (e.g. `nearest_teammate_m → 8`, `team_util_flash → 1`; utility rules in §3.3). Gain = Δ calibrated P(win) × round swing. Only suggest changes seen often enough in that situation (support check, `n ≥ 30` similar fights) to avoid extrapolating.
 - **Examples:** nearest neighbours in the situation-feature space among fights where the suggested decision was taken and won. Evidence only, not the engine.
 - **Explain:** `shap.TreeExplainer`; top 3 factors, tagged decision vs situation.
 
-### 3.5 App (Streamlit)
+### 3.6 App (Streamlit)
 1. **Match picker:** tournament → series → map (from `series.csv`, `meta/games.csv`).
 2. **Match review:** round timeline with round-WP line; ranked list of costliest decisions.
 3. **Fight detail:** 2D map with 10 player dots at fight start, utility casts, P(win) gauge, SHAP bars, best alternative + gain, pro example links (series/round/time).
@@ -172,7 +222,7 @@ Map zones: grid cells (e.g. 8×8 per map) at first; replace with named callouts 
 - Optional: LLM writes a 2-sentence coaching note from the structured factors (no raw data sent; or skip entirely to keep everything local).
 - Map images: need per-map minimap images and a world→image transform. **Open question:** sourcing these within license/copyright; fallback is a plain scatter with fitted bounds.
 
-### 3.6 Caching and error handling
+### 3.7 Caching and error handling
 - Each stage skips series whose output file is newer than its input + code version (`--force` to redo).
 - Bad series (parse error, no games, invalidated `2855902`) → logged to `derived/ingest_errors.csv`, pipeline continues.
 - Schema checks between stages (expected columns, no NaN in labels, row counts per series) fail loudly.
@@ -208,6 +258,7 @@ Map zones: grid cells (e.g. 8×8 per map) at first; replace with named callouts 
 | UI | Streamlit | FastAPI + React | Days faster, Python only; less polished / custom |
 | Fight definition | Rule-based, configurable | Learned segmentation | Explainable and tunable; misses no-hit fights |
 | Map zones | Grid cells | Named callouts | Works for every map now; less readable for coaches |
+| Utility in fights | Context counts + experimental estimated CC hits | Counts only; or ignore utility | Utility is a key fight factor; estimates are noisy, so they must earn their place via ablation |
 
 ---
 
@@ -237,8 +288,10 @@ Before every commit: `git diff --cached --name-only`. Nothing from the data repo
 1. Skeleton repo, `.gitignore`, `STL_DATA_DIR`, feed reader. **Check with 3 series.**
 2. Replayer + ingest for 3 series; eyeball positions/health/rollbacks.
 3. Fight builder + `data:explore-data` profile; tune fight config.
+   - Ability catalog (`configs/abilities.yaml`) + `casts` table + level-1 utility features.
 4. Full ingest; baseline + LightGBM fight model; calibration; series-split eval.
 5. Round model + round swing.
+   - Level-2 estimated CC hits; keep only if the ablation improves held-out log loss.
 6. What-if + SHAP + examples → `scored_fights`.
 7. Streamlit review pages; then habits.
 8. Polish, README, demo script for judges.
@@ -252,6 +305,8 @@ Before every commit: `git diff --cached --name-only`. Nothing from the data repo
 - **Armor:** not seen in state; confirm whether it exists anywhere.
 - **Selection bias** in what-if gains: consider propensity weighting or matched comparisons if gains look implausibly large.
 - **Low-rate series** (VCT Americas 2025): filter vs down-weight.
+- **CC estimation:** per-ability ranges/radii/durations are hand-entered and patch-dependent; curved/bouncing flashes are rough. Could fit effect ranges from data (e.g. damage from mollies/nades vs cast point) instead of hand values.
+- **Utility availability:** reconstruct charges per round (buys aren't fully tracked) or approximate from `max_charges` minus casts that round.
 - **Map images:** source and coordinate transforms.
 - **Neural set/sequence model** on raw player states, if the hand-built features plateau.
 - **License end:** models and derived tables can't be used after the hackathon. Plan deletion or archival without use.

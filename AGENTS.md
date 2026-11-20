@@ -62,6 +62,8 @@ During development, run ingest on 2–3 series (`--series 2748743 ...`) before t
 - Series `2855902` is invalidated (no match data). Skip it.
 - Game state per event has all players' **2D** `position`, `money`, `loadoutValue`, `netWorth`; round segment has `alive`, `currentHealth`. **Map and agent are not in the feed state**; join from meta. No armor field seen so far.
 - Kill events carry the weapon (`weaponKills`); damage events don't.
+- **No crowd-control status.** Nothing records who was flashed/stunned/nearsighted; `statusEffects` is always `[]`. Ability events record the cast only. Any "flashed" value is an **estimate** and must be labelled "possibly" in the UI (DESIGN.md §3.3).
+- **Undo ability casts:** apply `player-!used-ability` before counting utility.
 - **No aim during fights, no shots fired, no line of sight.** Aim (`view`, unit 3D vector) exists only on ability casts in the supplement. Respect its `quality` flag (`ok`, `gap_exceeded`, `missing_*`).
 - VCT Americas 2025 series sample movement at **1 Hz** instead of ~5 Hz. Carry an `is_low_rate` flag on every derived row.
 

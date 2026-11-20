@@ -8,6 +8,11 @@ fight:
   join_radius_m: 15
   end_after_s: 3.0          # no damage for this long -> fight over
   pre_fight_utility_s: 4.0  # utility cast within this window counts as "before the fight"
+  utility_radius_m: 25      # ...and within this distance of the fight (DESIGN.md §3.3)
+
+cc_estimate:                # level-2 estimated CC hits (experimental, DESIGN.md §3.3)
+  enabled: false            # turn on only if the ablation improves held-out log loss
+  max_frame_offset_ms: 200  # ignore casts whose nearest movement frame is further away
 
 whatif:
   min_support: 30           # similar real fights needed before recommending a change
